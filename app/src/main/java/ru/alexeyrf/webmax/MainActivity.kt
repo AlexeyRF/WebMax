@@ -11,6 +11,12 @@ import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.content.Context
+import android.content.SharedPreferences
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import androidx.appcompat.app.AlertDialog
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -84,7 +90,7 @@ class MainActivity : AppCompatActivity() {
 
         // Загружаем страницу, если активность создается впервые
         if (savedInstanceState == null) {
-            webView.loadUrl("https://web.max.ru")
+            checkVpnAndLoadUrl()
         }
 
         // Обработка кнопки "Назад" (современный способ)
@@ -98,6 +104,76 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         })
+    }
+
+    private fun checkVpnAndLoadUrl() {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        var hasVpn = false
+        var underlyingNetwork: Network? = null
+
+        val networks = cm.allNetworks
+        for (network in networks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                hasVpn = true
+            } else if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+                ) {
+                    underlyingNetwork = network
+                }
+            }
+        }
+
+        if (hasVpn) {
+            val prefs = getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE)
+            val vpnChoice = prefs.getString("vpn_choice", "unset")
+
+            when (vpnChoice) {
+                "bypass" -> {
+                    if (underlyingNetwork != null) {
+                        cm.bindProcessToNetwork(underlyingNetwork)
+                    }
+                    webView.loadUrl("https://web.max.ru")
+                }
+                "use_vpn" -> {
+                    cm.bindProcessToNetwork(null)
+                    webView.loadUrl("https://web.max.ru")
+                }
+                else -> {
+                    showVpnDialog(cm, underlyingNetwork, prefs)
+                }
+            }
+        } else {
+            cm.bindProcessToNetwork(null)
+            webView.loadUrl("https://web.max.ru")
+        }
+    }
+
+    private fun showVpnDialog(cm: ConnectivityManager, underlyingNetwork: Network?, prefs: SharedPreferences) {
+        val builder = AlertDialog.Builder(this)
+        builder.setTitle("Обнаружен VPN")
+        builder.setMessage("Как загрузить сайт?\n\n" +
+                "• Через VPN (внимание: может раскрыть выходной узел)\n" +
+                "• Напрямую (в обход VPN)")
+        
+        builder.setPositiveButton("Через VPN") { _, _ ->
+            prefs.edit().putString("vpn_choice", "use_vpn").apply()
+            cm.bindProcessToNetwork(null)
+            webView.loadUrl("https://web.max.ru")
+        }
+        
+        builder.setNegativeButton("В обход VPN") { _, _ ->
+            prefs.edit().putString("vpn_choice", "bypass").apply()
+            if (underlyingNetwork != null) {
+                cm.bindProcessToNetwork(underlyingNetwork)
+            }
+            webView.loadUrl("https://web.max.ru")
+        }
+        
+        builder.setCancelable(false)
+        builder.show()
     }
 
     private fun setupWebView() {
@@ -228,45 +304,67 @@ class MainActivity : AppCompatActivity() {
     private fun updateColorsFromWebView() {
         if (webView.width == 0 || webView.height == 0) return
         
-        try {
-            // Получаем цвета через программную отрисовку (работает всегда)
-            val topColor = getWebViewPixelColor(10, 10)
-            val bottomColor = getWebViewPixelColor(10, webView.height - 10)
-            
-            // Также меняем фон самой Activity, как вы предложили
-            window.decorView.setBackgroundColor(topColor)
-            
-            // И применяем к статус бару и навигации
-            window.statusBarColor = topColor
-            window.navigationBarColor = bottomColor
-            
-            val isTopLight = androidx.core.graphics.ColorUtils.calculateLuminance(topColor) > 0.5
-            val isBottomLight = androidx.core.graphics.ColorUtils.calculateLuminance(bottomColor) > 0.5
-            
-            val controller = androidx.core.view.WindowInsetsControllerCompat(window, window.decorView)
-            controller.isAppearanceLightStatusBars = isTopLight
-            controller.isAppearanceLightNavigationBars = isBottomLight
-        } catch (e: Exception) {
-            e.printStackTrace()
+        val js = """
+            (function() {
+                function getColor(x, y) {
+                    var el = document.elementFromPoint(x, y);
+                    while (el) {
+                        var color = window.getComputedStyle(el).backgroundColor;
+                        if (color !== 'rgba(0, 0, 0, 0)' && color !== 'transparent') {
+                            return color;
+                        }
+                        el = el.parentElement;
+                    }
+                    var bodyColor = window.getComputedStyle(document.body).backgroundColor;
+                    return (bodyColor !== 'rgba(0, 0, 0, 0)' && bodyColor !== 'transparent') ? bodyColor : 'rgb(255, 255, 255)';
+                }
+                return getColor(10, 10) + '|' + getColor(10, window.innerHeight - 10);
+            })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(js) { result ->
+            try {
+                if (result == null || result == "null") return@evaluateJavascript
+                val unquoted = result.replace("\"", "")
+                val parts = unquoted.split("|")
+                if (parts.size == 2) {
+                    val topColor = parseCssColor(parts[0])
+                    val bottomColor = parseCssColor(parts[1])
+                    
+                    window.decorView.setBackgroundColor(topColor)
+                    window.statusBarColor = topColor
+                    window.navigationBarColor = bottomColor
+                    
+                    val isTopLight = androidx.core.graphics.ColorUtils.calculateLuminance(topColor) > 0.5
+                    val isBottomLight = androidx.core.graphics.ColorUtils.calculateLuminance(bottomColor) > 0.5
+                    
+                    val controller = androidx.core.view.WindowInsetsControllerCompat(window, window.decorView)
+                    controller.isAppearanceLightStatusBars = isTopLight
+                    controller.isAppearanceLightNavigationBars = isBottomLight
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 
-    private fun getWebViewPixelColor(x: Int, y: Int): Int {
-        return try {
-            val safeX = x.coerceIn(0, webView.width - 1)
-            val safeY = y.coerceIn(0, webView.height - 1)
-            val bitmap = android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888)
-            val canvas = android.graphics.Canvas(bitmap)
-            canvas.translate(-safeX.toFloat(), -safeY.toFloat())
-            webView.draw(canvas)
-            val color = bitmap.getPixel(0, 0)
-            if (android.graphics.Color.alpha(color) == 0) {
-                android.graphics.Color.WHITE
-            } else {
-                color
+    private fun parseCssColor(cssColor: String): Int {
+        try {
+            val colorStr = cssColor.lowercase().trim()
+            if (colorStr.startsWith("rgb")) {
+                val values = colorStr.substringAfter("(").substringBefore(")").split(",")
+                if (values.size >= 3) {
+                    val r = values[0].trim().toIntOrNull() ?: 255
+                    val g = values[1].trim().toIntOrNull() ?: 255
+                    val b = values[2].trim().toIntOrNull() ?: 255
+                    return android.graphics.Color.rgb(r, g, b)
+                }
+            } else if (colorStr.startsWith("#")) {
+                return android.graphics.Color.parseColor(colorStr)
             }
         } catch (e: Exception) {
-            android.graphics.Color.WHITE
+            e.printStackTrace()
         }
+        return android.graphics.Color.WHITE
     }
 }

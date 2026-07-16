@@ -4,6 +4,7 @@
 
     <!-- Базовое разрешение на доступ в интернет -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     
     <!-- Дополнительные разрешения, которые могут быть запрошены сайтом (выдаются пользователем в рантайме) -->
     <uses-permission android:name="android.permission.CAMERA" />
