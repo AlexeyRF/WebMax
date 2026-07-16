@@ -5,6 +5,7 @@
     <!-- Базовое разрешение на доступ в интернет -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     
     <!-- Дополнительные разрешения, которые могут быть запрошены сайтом (выдаются пользователем в рантайме) -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -26,7 +27,7 @@
         android:usesCleartextTraffic="true">
         
         <activity
-            android:name=".MainActivity"
+            android:name=".AuthActivity"
             android:exported="true"
             android:configChanges="orientation|keyboardHidden|screenSize">
             <intent-filter>
@@ -34,6 +35,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:configChanges="orientation|keyboardHidden|screenSize" />
     </application>
 
 </manifest>

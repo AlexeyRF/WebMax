@@ -36,6 +36,33 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private var fileChooserCallback: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
+
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val data = result.data
+            if (data != null) {
+                val clipData = data.clipData
+                val uri = data.data
+                if (clipData != null) {
+                    val uris = Array(clipData.itemCount) { i -> clipData.getItemAt(i).uri }
+                    fileChooserCallback?.onReceiveValue(uris)
+                } else if (uri != null) {
+                    fileChooserCallback?.onReceiveValue(arrayOf(uri))
+                } else {
+                    fileChooserCallback?.onReceiveValue(null)
+                }
+            } else {
+                fileChooserCallback?.onReceiveValue(null)
+            }
+        } else {
+            fileChooserCallback?.onReceiveValue(null)
+        }
+        fileChooserCallback = null
+    }
+
     // Лаунчер для запроса рантайм-разрешений Android (для камеры, микрофона и геолокации)
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -256,6 +283,32 @@ class MainActivity : AppCompatActivity() {
                     Manifest.permission.ACCESS_FINE_LOCATION,
                     Manifest.permission.ACCESS_COARSE_LOCATION
                 ))
+            }
+
+            // Обработка выбора файлов
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                fileChooserCallback?.onReceiveValue(null)
+                fileChooserCallback = filePathCallback
+
+                val intent = fileChooserParams?.createIntent()
+                if (intent != null) {
+                    try {
+                        fileChooserLauncher.launch(intent)
+                    } catch (e: Exception) {
+                        fileChooserCallback?.onReceiveValue(null)
+                        fileChooserCallback = null
+                        return false
+                    }
+                } else {
+                    fileChooserCallback?.onReceiveValue(null)
+                    fileChooserCallback = null
+                    return false
+                }
+                return true
             }
         }
     }
