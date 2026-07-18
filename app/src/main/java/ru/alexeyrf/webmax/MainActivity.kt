@@ -66,15 +66,27 @@ class MainActivity : AppCompatActivity() {
     // Лаунчер для запроса рантайм-разрешений Android (для камеры, микрофона и геолокации)
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
+    ) { permissionsResult ->
         // 1. Обработка разрешений для камеры и микрофона в WebView
         pendingPermissionRequest?.let { request ->
             val grantedList = mutableListOf<String>()
-            if (permissions[Manifest.permission.CAMERA] == true) {
-                grantedList.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-            }
-            if (permissions[Manifest.permission.RECORD_AUDIO] == true) {
-                grantedList.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+            
+            val isCameraGranted = permissionsResult[Manifest.permission.CAMERA] == true || 
+                ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                
+            val isAudioGranted = permissionsResult[Manifest.permission.RECORD_AUDIO] == true || 
+                ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+            for (resource in request.resources) {
+                when (resource) {
+                    PermissionRequest.RESOURCE_VIDEO_CAPTURE -> {
+                        if (isCameraGranted) grantedList.add(resource)
+                    }
+                    PermissionRequest.RESOURCE_AUDIO_CAPTURE -> {
+                        if (isAudioGranted) grantedList.add(resource)
+                    }
+                    else -> grantedList.add(resource)
+                }
             }
 
             if (grantedList.isNotEmpty()) {
@@ -86,13 +98,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 2. Обработка разрешений для геолокации
-        if (pendingGeolocationCallback != null) {
-            if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true) {
-                pendingGeolocationCallback?.invoke(pendingGeolocationOrigin, true, false)
-            } else {
-                pendingGeolocationCallback?.invoke(pendingGeolocationOrigin, false, false)
-            }
+        pendingGeolocationCallback?.let { callback ->
+            val isLocationGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                                    ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            callback.invoke(pendingGeolocationOrigin, isLocationGranted, false)
             pendingGeolocationCallback = null
             pendingGeolocationOrigin = null
         }
@@ -209,6 +218,9 @@ class MainActivity : AppCompatActivity() {
         // Включаем JavaScript (нужно для большинства современных сайтов)
         settings.javaScriptEnabled = true
 
+        // Разрешаем воспроизведение медиа без жестов пользователя (важно для WebRTC/Media)
+        settings.mediaPlaybackRequiresUserGesture = false
+
         // --- СОХРАНЕНИЕ ДАННЫХ ДЛЯ ВХОДА И СЕССИЙ ---
         settings.domStorageEnabled = true // Включает LocalStorage (сохраняет токены и данные)
         settings.databaseEnabled = true   // Включает Web SQL Database
@@ -322,13 +334,17 @@ class MainActivity : AppCompatActivity() {
         if (permissionsToRequest.isNotEmpty()) {
             requestPermissionLauncher.launch(permissionsToRequest)
         } else {
-            // Если все разрешения уже были выданы пользователем ранее, даем доступ WebView
-            pendingPermissionRequest?.grant(pendingPermissionRequest?.resources)
-            pendingPermissionRequest = null
+            // Если все разрешения уже были выданы пользователем ранее, даем доступ
+            pendingPermissionRequest?.let { request ->
+                request.grant(request.resources)
+                pendingPermissionRequest = null
+            }
 
-            pendingGeolocationCallback?.invoke(pendingGeolocationOrigin, true, false)
-            pendingGeolocationCallback = null
-            pendingGeolocationOrigin = null
+            pendingGeolocationCallback?.let { callback ->
+                callback.invoke(pendingGeolocationOrigin, true, false)
+                pendingGeolocationCallback = null
+                pendingGeolocationOrigin = null
+            }
         }
     }
 
