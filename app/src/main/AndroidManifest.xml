@@ -13,6 +13,8 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Указываем, что железо не обязательно, чтобы не отсекать устройства без камеры -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -41,6 +43,7 @@
             android:name=".MainActivity"
             android:exported="false"
             android:configChanges="orientation|keyboardHidden|screenSize" />
+
     </application>
 
 </manifest>

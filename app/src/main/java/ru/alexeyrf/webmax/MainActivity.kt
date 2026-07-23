@@ -21,6 +21,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.ExistingPeriodicWorkPolicy
+import java.util.concurrent.TimeUnit
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
@@ -111,6 +116,23 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        createNotificationChannel()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+            }
+        }
+        checkBatteryOptimizations()
+        
+        if (!BuildConfig.IS_FCM) {
+            val workRequest = PeriodicWorkRequestBuilder<BackgroundWebViewWorker>(15, TimeUnit.MINUTES).build()
+            WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+                "WebMaxBackgroundCheck",
+                ExistingPeriodicWorkPolicy.KEEP,
+                workRequest
+            )
+        }
+
         // Разрешаем изменять цвет статус-бара
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
         window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS)
@@ -145,7 +167,8 @@ class MainActivity : AppCompatActivity() {
     private fun checkVpnAndLoadUrl() {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         var hasVpn = false
-        var underlyingNetwork: Network? = null
+        var wifiNetwork: Network? = null
+        var cellNetwork: Network? = null
 
         val networks = cm.allNetworks
         for (network in networks) {
@@ -153,14 +176,15 @@ class MainActivity : AppCompatActivity() {
             if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
                 hasVpn = true
             } else if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
-                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
-                    caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
-                ) {
-                    underlyingNetwork = network
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) {
+                    wifiNetwork = network
+                } else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                    cellNetwork = network
                 }
             }
         }
+
+        val underlyingNetwork = wifiNetwork ?: cellNetwork
 
         if (hasVpn) {
             val prefs = getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE)
@@ -170,6 +194,8 @@ class MainActivity : AppCompatActivity() {
                 "bypass" -> {
                     if (underlyingNetwork != null) {
                         cm.bindProcessToNetwork(underlyingNetwork)
+                    } else {
+                        cm.bindProcessToNetwork(null)
                     }
                     webView.loadUrl("https://web.max.ru")
                 }
@@ -204,6 +230,8 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putString("vpn_choice", "bypass").apply()
             if (underlyingNetwork != null) {
                 cm.bindProcessToNetwork(underlyingNetwork)
+            } else {
+                cm.bindProcessToNetwork(null)
             }
             webView.loadUrl("https://web.max.ru")
         }
@@ -236,6 +264,10 @@ class MainActivity : AppCompatActivity() {
         // Разрешаем смешанный контент (HTTP и HTTPS одновременно)
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
 
+        if (BuildConfig.IS_FCM) {
+            webView.addJavascriptInterface(WebAppInterface(this), "AndroidBridge")
+        }
+
         // Указываем WebViewClient, чтобы ссылки открывались внутри приложения, а не в браузере
         webView.webViewClient = object : WebViewClient() {
 
@@ -264,6 +296,11 @@ class MainActivity : AppCompatActivity() {
 
         // WebChromeClient обрабатывает события вроде вызовов JS, прогресса загрузки и разрешений
         webView.webChromeClient = object : WebChromeClient() {
+
+            override fun onReceivedTitle(view: WebView?, title: String?) {
+                super.onReceivedTitle(view, title)
+                handlePageTitleChange(title)
+            }
 
             // Запрос разрешений (Камера, Микрофон) со стороны веб-страницы
             override fun onPermissionRequest(request: PermissionRequest) {
@@ -435,5 +472,86 @@ class MainActivity : AppCompatActivity() {
             e.printStackTrace()
         }
         return android.graphics.Color.WHITE
+    }
+
+    private fun handlePageTitleChange(title: String?) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                return
+            }
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                return
+            }
+        }
+
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        if (title.isNullOrEmpty() || title.trim().equals("MAX", ignoreCase = true)) {
+            notificationManager.cancel(1001)
+        } else {
+            val intent = android.content.Intent(this, MainActivity::class.java).apply {
+                flags = android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            val pendingIntent = android.app.PendingIntent.getActivity(
+                this, 0, intent, android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            val builder = androidx.core.app.NotificationCompat.Builder(this, "webmax_notifications")
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("WebMax")
+                .setContentText(title)
+                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+
+            try {
+                notificationManager.notify(1001, builder.build())
+            } catch (e: SecurityException) {
+                // Нет разрешения
+            }
+        }
+    }
+
+    private fun createNotificationChannel() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val name = "Уведомления WebMax"
+            val descriptionText = "Уведомления о новых сообщениях"
+            val importance = android.app.NotificationManager.IMPORTANCE_DEFAULT
+            val channel = android.app.NotificationChannel("webmax_notifications", name, importance).apply {
+                description = descriptionText
+            }
+            val notificationManager: android.app.NotificationManager =
+                getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun checkBatteryOptimizations() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                val prefs = getSharedPreferences("battery_prefs", Context.MODE_PRIVATE)
+                if (!prefs.getBoolean("asked_battery", false)) {
+                    prefs.edit().putBoolean("asked_battery", true).apply()
+                    AlertDialog.Builder(this)
+                        .setTitle("Работа уведомлений")
+                        .setMessage("Внимание: если вы смахнете приложение из «Недавних» (полностью закроете его), уведомления могут приходить с задержкой до 15 минут из-за ограничений Android.\n\nДля стабильной работы уведомлений, пожалуйста, отключите режим энергосбережения для этого приложения.")
+                        .setPositiveButton("Понятно, настроить") { _, _ ->
+                            try {
+                                val intent = android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                    data = android.net.Uri.parse("package:$packageName")
+                                }
+                                startActivity(intent)
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }
+                        .setNegativeButton("Позже", null)
+                        .show()
+                }
+            }
+        }
     }
 }
